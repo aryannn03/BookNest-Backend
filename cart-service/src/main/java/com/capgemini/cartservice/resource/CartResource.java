@@ -13,7 +13,6 @@ import java.util.Map;
 
 @RestController
 @RequestMapping("/cart")
-@CrossOrigin(origins = "*")
 public class CartResource {
 
     @Autowired
@@ -126,13 +125,4 @@ public class CartResource {
                 "Cart cleared successfully"));
     }
 
-    // ─── Global Exception Handler ─────────────────────────────────────────────
-
-    @ExceptionHandler(RuntimeException.class)
-    public ResponseEntity<Map<String, String>> handleException(
-            RuntimeException ex) {
-        return ResponseEntity
-                .status(HttpStatus.BAD_REQUEST)
-                .body(Map.of("error", ex.getMessage()));
-    }
 }

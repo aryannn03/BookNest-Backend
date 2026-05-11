@@ -1,16 +1,15 @@
 package com.capgemini.cartservice.serviceimpl;
 
+import com.capgemini.cartservice.client.BookClient;
+import com.capgemini.cartservice.dto.BookResponse;
 import com.capgemini.cartservice.entity.Cart;
 import com.capgemini.cartservice.entity.CartItem;
 import com.capgemini.cartservice.repository.CartRepository;
 import com.capgemini.cartservice.service.CartService;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestTemplate;
 
 import java.util.List;
-import java.util.Map;
 
 @Service
 public class CartServiceImpl implements CartService {
@@ -19,46 +18,58 @@ public class CartServiceImpl implements CartService {
     private CartRepository cartRepository;
 
     @Autowired
-    private RestTemplate restTemplate;
-
-    @Value("${book.service.url}")
-    private String bookServiceUrl;
+    private BookClient bookClient;
 
     // ─── Get Cart By User ─────────────────────────────────────────────────────
 
     @Override
     public Cart getCartByUser(int userId) {
-        return cartRepository.findByUserId(userId)
+        Cart cart = cartRepository.findByUserId(userId)
                 .orElseGet(() -> {
-                    // Auto-create cart if not exists
                     Cart newCart = new Cart();
                     newCart.setUserId(userId);
                     newCart.setTotalPrice(0.0);
                     return cartRepository.save(newCart);
                 });
+
+        // Refresh prices from Book Service
+        for (CartItem item : cart.getItems()) {
+            try {
+                BookResponse book = bookClient.getBookById(item.getBookId());
+                if (book != null) {
+                    item.setPrice(book.getPrice());
+                }
+            } catch (Exception e) {
+                // Keep old price if Book Service is unavailable
+            }
+        }
+
+        recalculateTotal(cart);
+        cartRepository.save(cart);
+
+        return cart;
     }
 
     // ─── Add Item ─────────────────────────────────────────────────────────────
-    @SuppressWarnings("unchecked")
+
     @Override
     public Cart addItem(int userId, int bookId, int quantity) {
         Cart cart = getCartByUser(userId);
 
         // Fetch book details from book-service
-        Map<String, Object> bookDetails = restTemplate.getForObject(
-                bookServiceUrl + "/books/" + bookId, Map.class);
+        BookResponse book;
+        try {
+            book = bookClient.getBookById(bookId);
+        } catch (Exception e) {
+            throw new RuntimeException("Book service unavailable, please try again later");
+        }
 
-        if (bookDetails == null) {
+        if (book == null) {
             throw new RuntimeException("Book not found with id: " + bookId);
         }
 
-        String bookTitle = (String) bookDetails.get("title");
-        double price = ((Number) bookDetails.get("price")).doubleValue();
-        int stock = ((Number) bookDetails.get("stock")).intValue();
-
-        if (stock < quantity) {
-            throw new RuntimeException("Insufficient stock for book: "
-                    + bookTitle);
+        if (book.getStock() < quantity) {
+            throw new RuntimeException("Insufficient stock for book: " + book.getTitle());
         }
 
         // Check if book already in cart — update quantity instead
@@ -73,8 +84,8 @@ public class CartServiceImpl implements CartService {
         // Add new cart item
         CartItem newItem = new CartItem();
         newItem.setBookId(bookId);
-        newItem.setBookTitle(bookTitle);
-        newItem.setPrice(price);
+        newItem.setBookTitle(book.getTitle());
+        newItem.setPrice(book.getPrice());
         newItem.setQuantity(quantity);
         newItem.setCart(cart);
 
@@ -90,9 +101,14 @@ public class CartServiceImpl implements CartService {
     public Cart removeItem(int userId, int itemId) {
         Cart cart = getCartByUser(userId);
 
-        cart.getItems().removeIf(item -> item.getItemId() == itemId);
-        recalculateTotal(cart);
+        boolean removed = cart.getItems().removeIf(
+                item -> item.getItemId() == itemId);
 
+        if (!removed) {
+            throw new RuntimeException("Item not found in cart: " + itemId);
+        }
+
+        recalculateTotal(cart);
         return cartRepository.save(cart);
     }
 
@@ -106,13 +122,13 @@ public class CartServiceImpl implements CartService {
             return removeItem(userId, itemId);
         }
 
-        for (CartItem item : cart.getItems()) {
-            if (item.getItemId() == itemId) {
-                item.setQuantity(quantity);
-                break;
-            }
-        }
+        CartItem target = cart.getItems().stream()
+                .filter(item -> item.getItemId() == itemId)
+                .findFirst()
+                .orElseThrow(() -> new RuntimeException(
+                        "Item not found in cart: " + itemId));
 
+        target.setQuantity(quantity);
         recalculateTotal(cart);
         return cartRepository.save(cart);
     }
