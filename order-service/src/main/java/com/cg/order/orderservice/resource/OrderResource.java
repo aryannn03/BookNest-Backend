@@ -49,39 +49,33 @@ public class OrderResource {
         extractUserId(authHeader); // validates token first
         String role = extractRole(authHeader);
         if (!"ADMIN".equalsIgnoreCase(role)) {
-            throw new RuntimeException(
-                    "Access denied: Admin only");
+            throw new RuntimeException("Access denied: Admin only");
         }
     }
 
     // ─── Place COD Order ──────────────────────────────────────────────
+    // bookId & quantity removed — now fetched from cart on the backend
 
     @PostMapping("/place-cod")
-    public ResponseEntity<Order> placeOrderCOD(
+    public ResponseEntity<List<Order>> placeOrderCOD(
             @RequestHeader("Authorization") String authHeader,
-            @RequestParam int bookId,
-            @RequestParam int quantity,
             @RequestParam int addressId) {
 
         int userId = extractUserId(authHeader);
-        Order order = orderService.placeOrder(
-                userId, bookId, quantity, addressId, authHeader);
-        return ResponseEntity.status(HttpStatus.CREATED).body(order);
+        List<Order> orders = orderService.placeOrder(userId, addressId, authHeader);
+        return ResponseEntity.status(HttpStatus.CREATED).body(orders);
     }
 
     // ─── Place Online (Wallet) Order ──────────────────────────────────
 
     @PostMapping("/place-online")
-    public ResponseEntity<Order> placeOrderOnline(
+    public ResponseEntity<List<Order>> placeOrderOnline(
             @RequestHeader("Authorization") String authHeader,
-            @RequestParam int bookId,
-            @RequestParam int quantity,
             @RequestParam int addressId) {
 
         int userId = extractUserId(authHeader);
-        Order order = orderService.onlinePayment(
-                userId, bookId, quantity, addressId, authHeader);
-        return ResponseEntity.status(HttpStatus.CREATED).body(order);
+        List<Order> orders = orderService.onlinePayment(userId, addressId, authHeader);
+        return ResponseEntity.status(HttpStatus.CREATED).body(orders);
     }
 
     // ─── My Orders ────────────────────────────────────────────────────
@@ -106,13 +100,11 @@ public class OrderResource {
 
         return orderService.getOrderById(orderId)
                 .map(order -> {
-                    // Admin can see any order; user can only see their own
                     if ("ADMIN".equalsIgnoreCase(role) ||
                             order.getUserId() == userId) {
                         return ResponseEntity.ok(order);
                     }
-                    throw new RuntimeException(
-                            "Access denied: not your order");
+                    throw new RuntimeException("Access denied: not your order");
                 })
                 .orElse(ResponseEntity.notFound().build());
     }
@@ -138,7 +130,8 @@ public class OrderResource {
             @RequestParam String status) {
 
         requireAdmin(authHeader);
-        return ResponseEntity.ok(orderService.changeStatus(orderId, status, authHeader));
+        return ResponseEntity.ok(
+                orderService.changeStatus(orderId, status, authHeader));
     }
 
     // ─── All Orders (Admin only) ──────────────────────────────────────
@@ -175,6 +168,32 @@ public class OrderResource {
         Address saved = orderService.storeAddress(address);
         return ResponseEntity.status(HttpStatus.CREATED).body(saved);
     }
+    
+    // ─── Delete Address ─────────────────────────────────────────────────
+    
+    @DeleteMapping("/address/{addressId}")
+    public ResponseEntity<Map<String, String>> deleteAddress(
+            @RequestHeader("Authorization") String authHeader,
+            @PathVariable int addressId) {
+
+        try {
+
+            int userId = extractUserId(authHeader);
+
+            String message =
+                    orderService.deleteAddress(addressId, userId);
+
+            return ResponseEntity.ok(Map.of(
+                    "message", message
+            ));
+
+        } catch (RuntimeException e) {
+
+            return ResponseEntity.badRequest().body(
+                    Map.of("message", e.getMessage())
+            );
+        }
+    }
 
     // ─── My Addresses ─────────────────────────────────────────────────
 
@@ -205,5 +224,4 @@ public class OrderResource {
 
         return ResponseEntity.ok(orderService.getOrderByUserId(userId));
     }
-
 }

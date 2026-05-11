@@ -1,30 +1,34 @@
 package com.cg.order.orderservice.serviceimpl;
 
+import com.cg.order.orderservice.client.AuthClient;
+import com.cg.order.orderservice.client.BookClient;
+import com.cg.order.orderservice.client.CartClient;
+import com.cg.order.orderservice.client.NotificationClient;
+import com.cg.order.orderservice.client.WalletClient;
+import com.cg.order.orderservice.config.RabbitMQConfig;
 import com.cg.order.orderservice.dto.BookResponse;
+import com.cg.order.orderservice.dto.OrderEvent;
 import com.cg.order.orderservice.entity.Address;
 import com.cg.order.orderservice.entity.Order;
 import com.cg.order.orderservice.repository.AddressRepository;
 import com.cg.order.orderservice.repository.OrderRepository;
 import com.cg.order.orderservice.service.OrderService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.core.ParameterizedTypeReference;
-import org.springframework.http.HttpEntity;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpMethod;
-import org.springframework.http.ResponseEntity;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestClientException;
-import org.springframework.web.client.RestTemplate;
-import org.springframework.web.util.UriComponentsBuilder;
 
-import java.net.URI;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
 @Service
 public class OrderServiceImpl implements OrderService {
+
+    private static final Logger log = LoggerFactory.getLogger(OrderServiceImpl.class);
 
     @Autowired
     private OrderRepository orderRepository;
@@ -33,61 +37,70 @@ public class OrderServiceImpl implements OrderService {
     private AddressRepository addressRepository;
 
     @Autowired
-    private RestTemplate restTemplate;
+    private RabbitTemplate rabbitTemplate;
 
-    @Value("${book.service.url}")
-    private String bookServiceUrl;
+    @Autowired
+    private BookClient bookClient;
 
-    @Value("${wallet.service.url}")
-    private String walletServiceUrl;
+    @Autowired
+    private CartClient cartClient;
 
-    @Value("${cart.service.url}")
-    private String cartServiceUrl;
+    @Autowired
+    private WalletClient walletClient;
 
-    @Value("${auth.service.url}")
-    private String authServiceUrl;
+    @Autowired
+    private AuthClient authClient;
 
-    @Value("${notification.service.url}")
-    private String notificationServiceUrl;
+    @Autowired
+    private NotificationClient notificationClient;
 
-    // ─── Send Email Helper ────────────────────────────────────────────────────
+    // ─── Send In-App Notification Helper ─────────────────────────────────────
 
-    private void sendOrderEmail(int userId,
-                                String subject,
-                                String body,
-                                String authHeader) {
+    private void sendNotification(int userId, String type, String message) {
         try {
-            HttpHeaders headers = new HttpHeaders();
-            if (authHeader != null) {
-                headers.set("Authorization", authHeader);
-            }
-            HttpEntity<String> entity = new HttpEntity<>(headers);
-
-            ResponseEntity<Map<String, Object>> response =
-                    restTemplate.exchange(
-                            authServiceUrl + "/auth/profile/" + userId,
-                            HttpMethod.GET,
-                            entity,
-                            new ParameterizedTypeReference<Map<String, Object>>() {}
-                    );
-
-            Map<String, Object> user = response.getBody();
-            if (user == null) return;
-
-            String email = user.get("email").toString();
-
-            String url = UriComponentsBuilder
-                    .fromUri(URI.create(notificationServiceUrl +
-                            "/notifications/send-email"))
-                    .queryParam("toEmail", email)
-                    .queryParam("subject", subject)
-                    .queryParam("body", body)
-                    .toUriString();
-
-            restTemplate.postForObject(url, null, Object.class);
-
+            String encodedMessage = java.net.URLEncoder.encode(
+                    message, java.nio.charset.StandardCharsets.UTF_8);
+            notificationClient.sendNotification(userId, type, encodedMessage);
         } catch (Exception e) {
-            System.out.println("Email sending failed: " + e.getMessage());
+            log.warn("In-app notification failed: {}", e.getMessage());
+        }
+    }
+
+    // ─── Get User Email Helper ────────────────────────────────────────────────
+
+    private String getUserEmail(int userId, String authHeader) {
+        try {
+            Map<String, Object> user = authClient.getUserProfile(
+                    authHeader, userId);
+            return user != null ? user.get("email").toString() : "";
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    // ─── Publish Order Event Helper ───────────────────────────────────────────
+
+    private void publishOrderEvent(Order order, String eventType,
+                                   String userEmail) {
+        try {
+            OrderEvent event = new OrderEvent(
+                order.getOrderId(),
+                order.getUserId(),
+                userEmail,
+                order.getBookTitle(),
+                order.getQuantity(),
+                order.getAmountPaid(),
+                order.getModeOfPayment(),
+                order.getOrderStatus(),
+                eventType
+            );
+            rabbitTemplate.convertAndSend(
+                RabbitMQConfig.ORDER_EXCHANGE,
+                RabbitMQConfig.ORDER_ROUTING_KEY,
+                event
+            );
+        } catch (Exception e) {
+            log.warn("RabbitMQ publish failed: {}", e.getMessage());
         }
     }
 
@@ -95,12 +108,27 @@ public class OrderServiceImpl implements OrderService {
 
     private BookResponse fetchBook(int bookId) {
         try {
-            BookResponse book = restTemplate.getForObject(
-                    bookServiceUrl + "/books/" + bookId, BookResponse.class);
+            BookResponse book = bookClient.getBookById(bookId);
             if (book == null) throw new RuntimeException("Book not found");
             return book;
-        } catch (RestClientException e) {
+        } catch (RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
             throw new RuntimeException("Book service unavailable");
+        }
+    }
+
+    // ─── Fetch Cart Items Helper ──────────────────────────────────────────────
+
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> fetchCartItems(int userId) {
+        try {
+            Map<String, Object> cart = cartClient.getCartByUserId(userId);
+            if (cart == null) return List.of();
+            return (List<Map<String, Object>>) cart.get("items");
+        } catch (Exception e) {
+            throw new RuntimeException(
+                    "Cart service unavailable: " + e.getMessage());
         }
     }
 
@@ -108,25 +136,17 @@ public class OrderServiceImpl implements OrderService {
 
     private void refundWallet(int userId, double amount, int orderId) {
         try {
-            restTemplate.put(
-                    walletServiceUrl + "/wallet/refund/" + userId +
-                            "?amount=" + amount, null);
+            walletClient.refundMoney(userId, amount);
         } catch (Exception e) {
-            System.out.println("Refund failed for order #" + orderId +
-                    ": " + e.getMessage());
+            log.warn("Refund failed for order #{}: {}", orderId, e.getMessage());
         }
     }
 
     // ─── Build Order Helper ───────────────────────────────────────────────────
 
-    private Order buildOrder(int userId,
-                             int bookId,
-                             int quantity,
-                             String title,
-                             double price,
-                             double total,
-                             String paymentMode,
-                             String status,
+    private Order buildOrder(int userId, int bookId, int quantity,
+                             String title, double price, double total,
+                             String paymentMode, String status,
                              Address address) {
         Order order = new Order();
         order.setUserId(userId);
@@ -151,200 +171,263 @@ public class OrderServiceImpl implements OrderService {
     // ─── Place COD Order ──────────────────────────────────────────────────────
 
     @Override
-    public Order placeOrder(int userId,
-                            int bookId,
-                            int quantity,
-                            int addressId,
-                            String authHeader) {
-
-        BookResponse book = fetchBook(bookId);
-
-        if (book.getStock() < quantity) {
-            throw new RuntimeException("Insufficient stock");
-        }
-
+    public List<Order> placeOrder(int userId, int addressId,
+                                  String authHeader) {
         Address address = addressRepository.findById(addressId)
                 .orElseThrow(() -> new RuntimeException("Address not found"));
 
-        Order order = buildOrder(userId, bookId, quantity,
-                book.getTitle(), book.getPrice(),
-                book.getPrice() * quantity,
-                "COD", "Placed", address);
+        List<Map<String, Object>> cartItems = fetchCartItems(userId);
+        if (cartItems == null || cartItems.isEmpty()) {
+            throw new RuntimeException("Cart is empty");
+        }
 
-        Order saved = orderRepository.save(order);
+        List<Order> savedOrders = new ArrayList<>();
 
-        try {
-            restTemplate.put(
-                    bookServiceUrl + "/books/update-stock/" + bookId +
-                            "?quantity=" + (book.getStock() - quantity), null);
-        } catch (Exception e) {
-            System.out.println("Stock update failed: " + e.getMessage());
+        for (Map<String, Object> item : cartItems) {
+            int bookId   = ((Number) item.get("bookId")).intValue();
+            int quantity = ((Number) item.get("quantity")).intValue();
+            BookResponse book = fetchBook(bookId);
+
+            if (book.getStock() < quantity) {
+                throw new RuntimeException(
+                        "Insufficient stock for: " + book.getTitle());
+            }
+
+            Order order = buildOrder(userId, bookId, quantity,
+                    book.getTitle(), book.getPrice(),
+                    book.getPrice() * quantity,
+                    "COD", "Placed", address);
+
+            Order saved = orderRepository.save(order);
+            savedOrders.add(saved);
+
+            try {
+                bookClient.updateStock(bookId,
+                        book.getStock() - quantity);
+            } catch (Exception e) {
+                throw new RuntimeException(
+                        "Stock update failed: " + e.getMessage());
+            }
         }
 
         try {
-            restTemplate.delete(
-                    cartServiceUrl + "/cart/user/" + userId + "/clear");
+            cartClient.clearCart(userId);
         } catch (Exception e) {
-            System.out.println("Cart clear failed: " + e.getMessage());
+            throw new RuntimeException("Cart clear failed: " + e.getMessage());
         }
 
-        sendOrderEmail(
-                userId,
-                "Order Confirmed - #" + saved.getOrderId(),
-                "Hello,\n\n" +
-                        "Your order has been placed successfully.\n\n" +
-                        "Order ID: #" + saved.getOrderId() + "\n" +
-                        "Book: " + book.getTitle() + "\n" +
-                        "Quantity: " + quantity + "\n" +
-                        "Amount: ₹" + saved.getAmountPaid() + "\n" +
-                        "Payment Mode: COD\n" +
-                        "Status: Placed\n\n" +
-                        "Thank you for shopping with BookNest.",
-                authHeader);
+        sendNotification(userId, "ORDER_PLACED",
+                savedOrders.size() + " order(s) placed successfully via COD!");
 
-        return saved;
+        String email = getUserEmail(userId, authHeader);
+        for (Order saved : savedOrders) {
+            publishOrderEvent(saved, "ORDER_PLACED", email);
+        }
+
+        return savedOrders;
     }
 
     // ─── Wallet Payment ───────────────────────────────────────────────────────
 
     @Override
-    public Order onlinePayment(int userId,
-                               int bookId,
-                               int quantity,
-                               int addressId,
-                               String authHeader) {
-
-        BookResponse book = fetchBook(bookId);
-        double total = book.getPrice() * quantity;
-
-        if (book.getStock() < quantity) {
-            throw new RuntimeException("Insufficient stock");
-        }
-
-        // Validate wallet balance BEFORE saving the order
-        ResponseEntity<Map<String, Object>> walletResponse =
-                restTemplate.exchange(
-                        walletServiceUrl + "/wallet/" + userId,
-                        HttpMethod.GET,
-                        null,
-                        new ParameterizedTypeReference<Map<String, Object>>() {}
-                );
-
-        Map<String, Object> wallet = walletResponse.getBody();
-        if (wallet == null) throw new RuntimeException("Wallet not found");
-
-        double balance = ((Number) wallet.get("currentBalance")).doubleValue();
-        if (balance < total) {
-            throw new RuntimeException("Insufficient wallet balance");
-        }
-
+    public List<Order> onlinePayment(int userId, int addressId,
+                                     String authHeader) {
         Address address = addressRepository.findById(addressId)
                 .orElseThrow(() -> new RuntimeException("Address not found"));
 
-        Order order = buildOrder(userId, bookId, quantity,
-                book.getTitle(), book.getPrice(), total,
-                "WALLET", "Confirmed", address);
+        List<Map<String, Object>> cartItems = fetchCartItems(userId);
+        if (cartItems == null || cartItems.isEmpty()) {
+            throw new RuntimeException("Cart is empty");
+        }
 
-        Order saved = orderRepository.save(order);
+        double grandTotal = 0;
+        List<BookResponse> books = new ArrayList<>();
 
-        // Deduct wallet — roll back order if payment fails
+        for (Map<String, Object> item : cartItems) {
+            int bookId   = ((Number) item.get("bookId")).intValue();
+            int quantity = ((Number) item.get("quantity")).intValue();
+            BookResponse book = fetchBook(bookId);
+
+            if (book.getStock() < quantity) {
+                throw new RuntimeException(
+                        "Insufficient stock for: " + book.getTitle());
+            }
+
+            grandTotal += book.getPrice() * quantity;
+            books.add(book);
+        }
+
+        // Check wallet balance
+        Map<String, Object> wallet = walletClient.getWallet(userId);
+        if (wallet == null) throw new RuntimeException("Wallet not found");
+
+        double balance = ((Number) wallet.get("currentBalance")).doubleValue();
+        if (balance < grandTotal) {
+            throw new RuntimeException("Insufficient wallet balance");
+        }
+
+        // Save orders and update stock
+        List<Order> savedOrders = new ArrayList<>();
+
+        for (int i = 0; i < cartItems.size(); i++) {
+            Map<String, Object> item = cartItems.get(i);
+            int bookId   = ((Number) item.get("bookId")).intValue();
+            int quantity = ((Number) item.get("quantity")).intValue();
+            BookResponse book = books.get(i);
+
+            Order order = buildOrder(userId, bookId, quantity,
+                    book.getTitle(), book.getPrice(),
+                    book.getPrice() * quantity,
+                    "WALLET", "Placed", address);
+
+            Order saved = orderRepository.save(order);
+            savedOrders.add(saved);
+
+            try {
+                bookClient.updateStock(bookId,
+                        book.getStock() - quantity);
+            } catch (Exception e) {
+                throw new RuntimeException(
+                        "Stock update failed: " + e.getMessage());
+            }
+        }
+
+        // Deduct wallet with real orderId
+        int firstOrderId = savedOrders.get(0).getOrderId();
         try {
-            restTemplate.put(
-                    walletServiceUrl + "/wallet/pay/" + userId +
-                            "?amount=" + total +
-                            "&orderId=" + saved.getOrderId(),
-                    null);
+            walletClient.payMoney(userId, grandTotal, firstOrderId);
         } catch (Exception e) {
-            orderRepository.deleteById(saved.getOrderId());
             throw new RuntimeException(
-                    "Payment failed, order not placed: " + e.getMessage());
-        }
-
-        // Post-payment — non-critical, don't fail the order if these fail
-        try {
-            restTemplate.put(
-                    bookServiceUrl + "/books/update-stock/" + bookId +
-                            "?quantity=" + (book.getStock() - quantity), null);
-        } catch (Exception e) {
-            System.out.println("Stock update failed: " + e.getMessage());
+                    "Wallet payment failed: " + e.getMessage());
         }
 
         try {
-            restTemplate.delete(
-                    cartServiceUrl + "/cart/user/" + userId + "/clear");
+            cartClient.clearCart(userId);
         } catch (Exception e) {
-            System.out.println("Cart clear failed: " + e.getMessage());
+            throw new RuntimeException("Cart clear failed: " + e.getMessage());
         }
 
-        sendOrderEmail(
-                userId,
-                "Payment Successful - Order #" + saved.getOrderId(),
-                "Hello,\n\n" +
-                        "Your payment was successful.\n\n" +
-                        "Order ID: #" + saved.getOrderId() + "\n" +
-                        "Book: " + book.getTitle() + "\n" +
-                        "Quantity: " + quantity + "\n" +
-                        "Amount Paid: ₹" + saved.getAmountPaid() + "\n" +
-                        "Payment Mode: WALLET\n" +
-                        "Status: Confirmed\n\n" +
-                        "Thank you for shopping with BookNest.",
-                authHeader);
+        sendNotification(userId, "ORDER_PLACED",
+                savedOrders.size() + " order(s) placed via Wallet!");
+        sendNotification(userId, "PAYMENT_SUCCESS",
+                "Payment of ₹" + String.format("%.2f", grandTotal)
+                + " via Wallet was successful!");
 
-        return saved;
+        String email = getUserEmail(userId, authHeader);
+        for (Order saved : savedOrders) {
+            publishOrderEvent(saved, "ORDER_PLACED", email);
+        }
+
+        return savedOrders;
+    }
+
+    // ─── Razorpay Order ───────────────────────────────────────────────────────
+
+    @Override
+    public List<Order> placeRazorpayOrder(int userId, int addressId,
+                                           String razorpayPaymentId,
+                                           String authHeader) {
+        Address address = addressRepository.findById(addressId)
+                .orElseThrow(() -> new RuntimeException("Address not found"));
+
+        List<Map<String, Object>> cartItems = fetchCartItems(userId);
+        if (cartItems == null || cartItems.isEmpty()) {
+            throw new RuntimeException("Cart is empty");
+        }
+
+        List<Order> savedOrders = new ArrayList<>();
+
+        for (Map<String, Object> item : cartItems) {
+            int bookId   = ((Number) item.get("bookId")).intValue();
+            int quantity = ((Number) item.get("quantity")).intValue();
+            BookResponse book = fetchBook(bookId);
+
+            if (book.getStock() < quantity) {
+                throw new RuntimeException(
+                        "Insufficient stock for: " + book.getTitle());
+            }
+
+            Order order = buildOrder(userId, bookId, quantity,
+                    book.getTitle(), book.getPrice(),
+                    book.getPrice() * quantity,
+                    "RAZORPAY", "Placed", address);
+
+            order.setRazorpayPaymentId(razorpayPaymentId);
+
+            Order saved = orderRepository.save(order);
+            savedOrders.add(saved);
+
+            try {
+                bookClient.updateStock(bookId,
+                        book.getStock() - quantity);
+            } catch (Exception e) {
+                throw new RuntimeException(
+                        "Stock update failed: " + e.getMessage());
+            }
+        }
+
+        try {
+            cartClient.clearCart(userId);
+        } catch (Exception e) {
+            throw new RuntimeException("Cart clear failed: " + e.getMessage());
+        }
+
+        sendNotification(userId, "ORDER_PLACED",
+                savedOrders.size() + " order(s) placed via Razorpay!");
+        sendNotification(userId, "PAYMENT_SUCCESS",
+                "Razorpay payment " + razorpayPaymentId + " confirmed!");
+
+        String email = getUserEmail(userId, authHeader);
+        for (Order saved : savedOrders) {
+            publishOrderEvent(saved, "ORDER_PLACED", email);
+        }
+
+        return savedOrders;
     }
 
     // ─── Change Status ────────────────────────────────────────────────────────
 
     @Override
-    public Order changeStatus(int orderId, String status, String authHeader) {
-
+    public Order changeStatus(int orderId, String status,
+                              String authHeader) {
         Order order = orderRepository.findById(orderId)
                 .orElseThrow(() -> new RuntimeException("Order not found"));
 
         order.setOrderStatus(status);
         Order saved = orderRepository.save(order);
 
-        // Refund wallet if admin cancels a WALLET order
         if (status.equalsIgnoreCase("Cancelled") &&
                 "WALLET".equalsIgnoreCase(saved.getModeOfPayment())) {
             refundWallet(saved.getUserId(),
                     saved.getAmountPaid(), saved.getOrderId());
         }
 
-        String subject = "";
-        String body    = "";
+        String notifType = "";
+        String notifMessage = "";
 
         if (status.equalsIgnoreCase("Dispatched")) {
-            subject = "Order Dispatched";
-            body = "Hello,\n\n" +
-                    "Your order #" + saved.getOrderId() +
-                    " has been dispatched.\n" +
-                    "Book: " + saved.getBookTitle() + "\n" +
-                    "Quantity: " + saved.getQuantity() + "\n\n" +
-                    "It will reach you soon.\n\n" +
-                    "Thank you for shopping with BookNest.";
-
+            notifType    = "ORDER_DISPATCHED";
+            notifMessage = "Your order #" + saved.getOrderId()
+                    + " for \"" + saved.getBookTitle()
+                    + "\" has been dispatched!";
         } else if (status.equalsIgnoreCase("Delivered")) {
-            subject = "Order Delivered";
-            body = "Hello,\n\n" +
-                    "Your order #" + saved.getOrderId() +
-                    " has been delivered successfully.\n\n" +
-                    "We hope you enjoy reading " +
-                    saved.getBookTitle() + ".\n\n" +
-                    "Thank you for shopping with BookNest.";
-
+            notifType    = "ORDER_DELIVERED";
+            notifMessage = "Your order #" + saved.getOrderId()
+                    + " for \"" + saved.getBookTitle()
+                    + "\" has been delivered!";
         } else if (status.equalsIgnoreCase("Cancelled")) {
-            subject = "Order Cancelled";
-            body = "Hello,\n\n" +
-                    "Your order #" + saved.getOrderId() +
-                    " has been cancelled.\n\n" +
-                    "If payment was completed, a refund will be processed soon.\n\n" +
-                    "BookNest Support Team";
+            notifType    = "ORDER_CANCELLED";
+            notifMessage = "Your order #" + saved.getOrderId()
+                    + " for \"" + saved.getBookTitle()
+                    + "\" has been cancelled.";
         }
 
-        if (!subject.isEmpty()) {
-            sendOrderEmail(saved.getUserId(), subject, body, authHeader);
+        if (!notifType.isEmpty()) {
+            sendNotification(saved.getUserId(), notifType, notifMessage);
         }
+
+        String email = getUserEmail(saved.getUserId(), authHeader);
+        publishOrderEvent(saved, "STATUS_CHANGED", email);
 
         return saved;
     }
@@ -388,11 +471,33 @@ public class OrderServiceImpl implements OrderService {
         return addressRepository.findAll();
     }
 
+    @Override
+    public String deleteAddress(int addressId, int userId) {
+
+        Address address = addressRepository.findById(addressId)
+                .orElseThrow(() ->
+                        new RuntimeException("Address not found"));
+
+        if (address.getCustomerId() != userId) {
+            throw new RuntimeException(
+                    "Access denied: not your address");
+        }
+
+        try {
+            addressRepository.delete(address);
+            return "Address deleted successfully";
+
+        } catch (DataIntegrityViolationException e) {
+
+            throw new RuntimeException(
+                    "Cannot delete address used in previous orders");
+        }
+    }
+    
     // ─── Cancel Order ─────────────────────────────────────────────────────────
 
     @Override
     public Order cancelOrder(int orderId, int userId, String authHeader) {
-
         Order order = orderRepository.findById(orderId)
                 .orElseThrow(() -> new RuntimeException("Order not found"));
 
@@ -408,20 +513,18 @@ public class OrderServiceImpl implements OrderService {
         order.setOrderStatus("Cancelled");
         Order saved = orderRepository.save(order);
 
-        // Refund wallet if payment was made via wallet
         if ("WALLET".equalsIgnoreCase(saved.getModeOfPayment())) {
             refundWallet(saved.getUserId(),
                     saved.getAmountPaid(), saved.getOrderId());
         }
 
-        sendOrderEmail(
-                saved.getUserId(),
-                "Order Cancelled",
-                "Hello,\n\n" +
-                        "Your order #" + saved.getOrderId() +
-                        " has been cancelled successfully.\n\n" +
-                        "BookNest Team",
-                authHeader);
+        sendNotification(saved.getUserId(), "ORDER_CANCELLED",
+                "Your order #" + saved.getOrderId()
+                + " for \"" + saved.getBookTitle()
+                + "\" has been cancelled.");
+
+        String email = getUserEmail(saved.getUserId(), authHeader);
+        publishOrderEvent(saved, "ORDER_CANCELLED", email);
 
         return saved;
     }

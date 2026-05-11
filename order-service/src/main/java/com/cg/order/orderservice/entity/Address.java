@@ -23,6 +23,8 @@ public class Address {
     private String mobileNumber;
 
     private String flatNumber;
+    
+    private String street;
 
     private String city;
 

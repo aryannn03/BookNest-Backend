@@ -24,8 +24,9 @@ public class Order {
 
     private double amountPaid;
 
-    // COD or WALLET
     private String modeOfPayment;
+    
+    private String razorpayPaymentId;
 
     // Placed, Confirmed, Dispatched, Delivered, Cancelled
     private String orderStatus;
