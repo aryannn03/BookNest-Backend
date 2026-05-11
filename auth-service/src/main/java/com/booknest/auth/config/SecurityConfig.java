@@ -1,52 +1,89 @@
 package com.booknest.auth.config;
 
+import com.booknest.auth.security.JwtAuthFilter;
+import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
 @Configuration
 @EnableWebSecurity
+@EnableMethodSecurity
 public class SecurityConfig {
 
+    @Autowired
+    private JwtAuthFilter jwtAuthFilter;
+
+    @Autowired
+    private OAuth2LoginSuccessHandler oAuth2LoginSuccessHandler;
+
     @Bean
-    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
-
+    public SecurityFilterChain securityFilterChain(HttpSecurity http)
+            throws Exception {
         http
-            // Disable CSRF (not needed for REST APIs)
             .csrf(csrf -> csrf.disable())
-
-            // Session management - stateless because we use JWT
             .sessionManagement(session ->
-                session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-
-            // URL authorization rules
+                session.sessionCreationPolicy(SessionCreationPolicy.IF_REQUIRED))
             .authorizeHttpRequests(auth -> auth
-
-                // Public endpoints - no token needed
-                .requestMatchers("/auth/register").permitAll()
-                .requestMatchers("/auth/login").permitAll()
-                .requestMatchers("/auth/validate").permitAll()
-
-                // OAuth2 login endpoints - public
-                .requestMatchers("/login/oauth2/**").permitAll()
-                .requestMatchers("/oauth2/**").permitAll()
-
-                // Admin only endpoints
-                .requestMatchers("/auth/users/**").hasRole("ADMIN")
-
-                // All other endpoints need authentication
+            	.requestMatchers(
+            		    "/auth/register",
+           			    "/auth/login",
+           			    "/auth/validate",
+           			    "/auth/refresh",
+           			    "/auth/otp/send",
+           			    "/auth/forgot-password/**",
+           			    "/auth/otp/verify",
+           			    "/auth/forgot-password/send-otp",   
+           			    "/auth/forgot-password/reset",   
+           			    "/auth/oauth2/success",
+           			    "/test-success",
+           			    "/login/**",
+           			    "/login/oauth2/**",
+           			    "/login/oauth2/code/**",
+           			    "/oauth2/**",
+           			    "/actuator/health",
+           			    "/actuator/info",
+           			    "/api-docs/**",
+           			    "/swagger-ui/**",
+           			    "/swagger-ui.html"
+           			).permitAll()
+                .requestMatchers("/auth/admin/**").hasRole("ADMIN")
                 .anyRequest().authenticated()
             )
-
-            // Google OAuth2 login
             .oauth2Login(oauth2 -> oauth2
-                .defaultSuccessUrl("/auth/oauth2/success", true)
-                .failureUrl("/auth/oauth2/failure")
-            );
+                .successHandler(oAuth2LoginSuccessHandler)
+            )
+            .exceptionHandling(ex -> ex
+                .authenticationEntryPoint((request, response, authException) -> {
+                    response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+                    response.setContentType("application/json");
+                    response.getWriter().write("{\"error\": \"Unauthorized\"}");
+                })
+            )
+            .addFilterBefore(jwtAuthFilter,
+                    UsernamePasswordAuthenticationFilter.class);
 
         return http.build();
+    }
+
+    @Bean
+    public PasswordEncoder passwordEncoder() {
+        return new BCryptPasswordEncoder();
+    }
+
+    @Bean
+    public AuthenticationManager authenticationManager(
+            AuthenticationConfiguration config) throws Exception {
+        return config.getAuthenticationManager();
     }
 }

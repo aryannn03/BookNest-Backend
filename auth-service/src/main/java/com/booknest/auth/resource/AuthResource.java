@@ -1,18 +1,26 @@
 package com.booknest.auth.resource;
 
+import com.booknest.auth.dto.AuthResponse;
+import com.booknest.auth.dto.ForgotPasswordRequest;
+import com.booknest.auth.dto.LoginRequest;
+import com.booknest.auth.dto.OtpRequest;
+import com.booknest.auth.dto.OtpVerifyRequest;
+import com.booknest.auth.dto.RegisterRequest;
+import com.booknest.auth.dto.ResetPasswordRequest;
+import com.booknest.auth.dto.UserProfileResponse;
 import com.booknest.auth.entity.User;
 import com.booknest.auth.service.AuthService;
+import com.booknest.auth.service.OtpService;
+import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.security.oauth2.core.user.OAuth2User;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.security.core.Authentication;
 
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 
 @RestController
 @RequestMapping("/auth")
@@ -21,188 +29,230 @@ public class AuthResource {
     @Autowired
     private AuthService authService;
 
+    @Autowired
+    private OtpService otpService;
 
-    // Register
-    // POST /auth/register
+    // ─── Register ────────────────────────────────────────────────────────────
+
     @PostMapping("/register")
-    public ResponseEntity<?> register(@RequestBody User user) {
-        try {
-            User savedUser = authService.register(user);
-            return ResponseEntity.status(HttpStatus.CREATED).body(savedUser);
-        } catch (RuntimeException e) {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(e.getMessage());
-        }
+    public ResponseEntity<AuthResponse> register(
+            @Valid @RequestBody RegisterRequest request) {
+        AuthResponse response = authService.register(request);
+        return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 
+    // ─── Login ───────────────────────────────────────────────────────────────
 
-    // Login
-    // POST /auth/login
     @PostMapping("/login")
-    public ResponseEntity<?> login(@RequestBody Map<String, String> request) {
-        try {
-            String email = request.get("email");
-            String password = request.get("password");
-            String token = authService.login(email, password);
-
-            Map<String, String> response = new HashMap<>();
-            response.put("token", token);
-            response.put("message", "Login successful");
-
-            return ResponseEntity.ok(response);
-        } catch (RuntimeException e) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(e.getMessage());
-        }
+    public ResponseEntity<AuthResponse> login(
+            @Valid @RequestBody LoginRequest request) {
+        AuthResponse response = authService.login(request);
+        return ResponseEntity.ok(response);
     }
 
+    // ─── Validate Token ──────────────────────────────────────────────────────
 
-    // Logout
-    // POST /auth/logout
-    @PostMapping("/logout")
-    public ResponseEntity<?> logout(@RequestHeader("Authorization") String token) {
-        try {
-            authService.logout(token);
-            return ResponseEntity.ok("Logged out successfully");
-        } catch (RuntimeException e) {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(e.getMessage());
-        }
-    }
-
-    
-    // Validate Token
-    // GET /auth/validate
     @GetMapping("/validate")
-    public ResponseEntity<?> validateToken(@RequestHeader("Authorization") String token) {
+    public ResponseEntity<Map<String, Boolean>> validateToken(
+            @RequestParam String token) {
         boolean isValid = authService.validateToken(token);
-        if (isValid) {
-            return ResponseEntity.ok("Token is valid");
-        } else {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("Token is invalid or expired");
-        }
+        return ResponseEntity.ok(Map.of("valid", isValid));
     }
 
+    // ─── Refresh Token ───────────────────────────────────────────────────────
 
-    // Refresh Token
-    // POST /auth/refresh
     @PostMapping("/refresh")
-    public ResponseEntity<?> refreshToken(@RequestHeader("Authorization") String token) {
-        try {
-            String newToken = authService.refreshToken(token);
-            Map<String, String> response = new HashMap<>();
-            response.put("token", newToken);
-            return ResponseEntity.ok(response);
-        } catch (RuntimeException e) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(e.getMessage());
-        }
+    public ResponseEntity<Map<String, String>> refreshToken(
+            @RequestParam String token) {
+        String newToken = authService.refreshToken(token);
+        return ResponseEntity.ok(Map.of("token", newToken));
     }
 
+    // ─── Send OTP (registration email verification) ──────────────────────────
 
-    // Get Profile
-    // GET /auth/profile/{userId}
+    @PostMapping("/otp/send")
+    public ResponseEntity<Map<String, String>> sendOtp(
+            @Valid @RequestBody OtpRequest request) {
+
+        boolean emailExists = authService.emailExists(request.getEmail());
+        otpService.sendOtp(request.getEmail());
+
+        return ResponseEntity.ok(Map.of(
+                "message", "OTP sent successfully to " + request.getEmail(),
+                "emailRegistered", String.valueOf(emailExists)
+        ));
+    }
+
+    // ─── Verify OTP (registration) ───────────────────────────────────────────
+
+    @PostMapping("/otp/verify")
+    public ResponseEntity<Map<String, Object>> verifyOtp(
+            @Valid @RequestBody OtpVerifyRequest request) {
+
+        boolean verified = otpService.verifyOtp(request.getEmail(), request.getOtp());
+
+        if (!verified) {
+            return ResponseEntity
+                    .status(HttpStatus.BAD_REQUEST)
+                    .body(Map.of(
+                            "verified", false,
+                            "message", "Invalid or expired OTP"
+                    ));
+        }
+
+        boolean emailRegistered = authService.emailExists(request.getEmail());
+
+        return ResponseEntity.ok(Map.of(
+                "verified", true,
+                "emailRegistered", emailRegistered,
+                "message", emailRegistered
+                        ? "Email verified. You can proceed to login."
+                        : "Email verified. You can proceed to register."
+        ));
+    }
+
+    // ─── Forgot Password — Step 1: Send OTP ──────────────────────────────────
+    
+    @PostMapping("/forgot-password/send-otp")
+    public ResponseEntity<Map<String, String>> forgotPasswordSendOtp(
+            @Valid @RequestBody ForgotPasswordRequest request) {
+
+        authService.sendPasswordResetOtp(request.getEmail());
+
+        return ResponseEntity.ok(Map.of(
+                "message", "Password reset OTP sent to " + request.getEmail()
+        ));
+    }
+
+    // ─── Forgot Password — Step 2: Verify OTP + Reset Password ───────────────
+    @PostMapping("/forgot-password/reset")
+    public ResponseEntity<Map<String, String>> resetPassword(
+            @RequestBody ResetPasswordRequest request) {
+
+        authService.resetPassword(
+                request.getEmail(),
+                request.getNewPassword()
+        );
+
+        return ResponseEntity.ok(Map.of(
+                "message", "Password reset successfully. You can now log in."
+        ));
+    }
+
+    // ─── Get Profile ─────────────────────────────────────────────────────────
+
     @GetMapping("/profile/{userId}")
-    public ResponseEntity<?> getProfile(@PathVariable int userId) {
-        try {
-            Optional<User> user = authService.getUserById(userId);
-            return user.map(ResponseEntity::ok)
-                    .orElse(ResponseEntity.status(HttpStatus.NOT_FOUND).build());
-        } catch (RuntimeException e) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(e.getMessage());
-        }
-    }
-
-
-    // Update Profile
-    // PUT /auth/profile
-    @PutMapping("/profile")
-    public ResponseEntity<?> updateProfile(@RequestBody User user) {
-        try {
-            User updatedUser = authService.register(user);
-            return ResponseEntity.ok(updatedUser);
-        } catch (RuntimeException e) {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(e.getMessage());
-        }
-    }
-
-
-    // Change Password
-    // PUT /auth/change-password/{userId}
-    @PutMapping("/change-password/{userId}")
-    public ResponseEntity<?> changePassword(
+    public ResponseEntity<UserProfileResponse> getProfile(
             @PathVariable int userId,
-            @RequestBody Map<String, String> request) {
-        try {
-            String newPassword = request.get("newPassword");
-            authService.changePassword(userId, newPassword);
-            return ResponseEntity.ok("Password changed successfully");
-        } catch (RuntimeException e) {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(e.getMessage());
+            Authentication authentication) {
+
+        User user = authService.getUserById(userId);
+        String currentEmail = authentication.getName();
+
+        if (!user.getEmail().equals(currentEmail)) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
+
+        return ResponseEntity.ok(new UserProfileResponse(
+                user.getUserId(), user.getFullName(), user.getEmail(),
+                user.getRole(), user.getProvider(), user.getMobile()
+        ));
     }
 
+    // ─── Update Profile ──────────────────────────────────────────────────────
 
-    // Get All Users by Role (Admin)
-    // GET /auth/users/{role}
-    @GetMapping("/users/{role}")
-    public ResponseEntity<List<User>> getUsersByRole(@PathVariable String role) {
-        List<User> users = authService.getAllUsersByRole(role);
+    @PutMapping("/profile/{userId}")
+    public ResponseEntity<UserProfileResponse> updateProfile(
+            @PathVariable int userId,
+            @RequestBody User updatedUser,
+            Authentication authentication) {
+
+        User existing = authService.getUserById(userId);
+        String currentEmail = authentication.getName();
+
+        if (!existing.getEmail().equals(currentEmail)) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        }
+
+        User saved = authService.updateProfile(userId, updatedUser);
+        return ResponseEntity.ok(new UserProfileResponse(
+                saved.getUserId(), saved.getFullName(), saved.getEmail(),
+                saved.getRole(), saved.getProvider(), saved.getMobile()
+        ));
+    }
+
+    // ─── Change Password ─────────────────────────────────────────────────────
+
+    @PutMapping("/change-password/{userId}")
+    public ResponseEntity<Map<String, String>> changePassword(
+            @PathVariable int userId,
+            @RequestParam String oldPassword,
+            @RequestParam String newPassword,
+            Authentication authentication) {
+
+        User user = authService.getUserById(userId);
+        if (!user.getEmail().equals(authentication.getName())) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        }
+
+        authService.changePassword(userId, oldPassword, newPassword);
+        return ResponseEntity.ok(Map.of("message", "Password changed successfully"));
+    }
+
+    // ─── OAuth2 Success Redirect ─────────────────────────────────────────────
+
+    @GetMapping("/oauth2/success")
+    public ResponseEntity<Map<String, String>> oauth2Success(
+            @RequestParam String token) {
+        return ResponseEntity.ok(Map.of(
+                "token", token,
+                "message", "GitHub login successful"
+        ));
+    }
+
+    // ─── Admin — Get All Users ───────────────────────────────────────────────
+
+    @GetMapping("/admin/users")
+    @PreAuthorize("hasRole('ADMIN')")
+    public ResponseEntity<List<User>> getAllUsers() {
+        List<User> users = authService.getUsersByRole("CUSTOMER");
         return ResponseEntity.ok(users);
     }
 
+    // ─── Admin — Delete User ─────────────────────────────────────────────────
 
-    // Delete User (Admin)
-    // DELETE /auth/users/{userId}
-    @DeleteMapping("/users/{userId}")
-    public ResponseEntity<?> deleteUser(@PathVariable int userId) {
-        try {
-            authService.deleteUser(userId);
-            return ResponseEntity.ok("User deleted successfully");
-        } catch (RuntimeException e) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(e.getMessage());
-        }
+    @DeleteMapping("/admin/users/{userId}")
+    @PreAuthorize("hasRole('ADMIN')")
+    public ResponseEntity<Map<String, String>> deleteUser(
+            @PathVariable int userId) {
+        authService.deleteAccount(userId);
+        return ResponseEntity.ok(Map.of("message", "User deleted successfully"));
     }
 
+    // ─── Logout ──────────────────────────────────────────────────────────────
+
+    @PostMapping("/logout")
+    public ResponseEntity<Map<String, String>> logout(
+            @RequestHeader("Authorization") String authHeader) {
+        if (authHeader != null && authHeader.startsWith("Bearer ")) {
+            String token = authHeader.substring(7);
+            authService.logout(token);
+        }
+        return ResponseEntity.ok(Map.of("message", "Logged out successfully"));
+    }
     
-    // OAuth2 Success
-    // GET /auth/oauth2/success
-    @GetMapping("/oauth2/success")
-    public ResponseEntity<?> oauth2Success(@AuthenticationPrincipal OAuth2User oauthUser) {
-        try {
-            String email = oauthUser.getAttribute("email");
-            String name = oauthUser.getAttribute("name");
+    @PostMapping("/forgot-password/verify-otp")
+    public ResponseEntity<Map<String, String>> verifyForgotPasswordOtp(
+            @RequestBody OtpVerifyRequest request) {
 
-            // Check if user already exists, if not auto register
-            User user;
-            try {
-                user = authService.getUserByEmail(email);
-            } catch (RuntimeException e) {
-                User newUser = new User();
-                newUser.setEmail(email);
-                newUser.setFullName(name);
-                newUser.setProvider("google");
-                newUser.setRole("CUSTOMER");
-                user = authService.register(newUser);
-            }
+        boolean valid = otpService.verifyOtp(request.getEmail(), request.getOtp());
 
-            // Generate JWT token
-            String token = authService.login(email, null);
-
-            Map<String, String> response = new HashMap<>();
-            response.put("token", token);
-            response.put("message", "Google login successful");
-            response.put("email", email);
-            response.put("name", name);
-
-            return ResponseEntity.ok(response);
-        } catch (Exception e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body("OAuth2 login failed: " + e.getMessage());
+        if (!valid) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(Map.of("message", "Invalid or expired OTP"));
         }
-    }
 
-    // OAuth2 Failure
-    // GET /auth/oauth2/failure
-    @GetMapping("/oauth2/failure")
-    public ResponseEntity<?> oauth2Failure() {
-        return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                .body("Google login failed. Please try again.");
+        return ResponseEntity.ok(Map.of("message", "OTP verified successfully"));
     }
+    
 }

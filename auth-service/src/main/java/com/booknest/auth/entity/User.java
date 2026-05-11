@@ -1,19 +1,18 @@
 package com.booknest.auth.entity;
 
 import jakarta.persistence.*;
-import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
-import lombok.AllArgsConstructor;
-import lombok.Data;
-import lombok.NoArgsConstructor;
+import lombok.*;
 
 import java.time.LocalDateTime;
 
 @Entity
 @Table(name = "users")
-@Data
+@Getter
+@Setter
 @NoArgsConstructor
 @AllArgsConstructor
+@ToString
 public class User {
 
     @Id
@@ -23,25 +22,27 @@ public class User {
     @NotBlank
     private String fullName;
 
-    @Email
-    @NotBlank
+
     @Column(unique = true, nullable = false)
     private String email;
-
+    
+    @ToString.Exclude
     private String passwordHash;
 
-    @Column(nullable = false)
-    private String role; 
+    // CUSTOMER or ADMIN
+    private String role;
 
-    private String provider; 
+    // LOCAL or GITHUB
+    private String provider;
 
     private Long mobile;
 
-    @Column(updatable = false)
     private LocalDateTime createdAt;
 
     @PrePersist
-    protected void onCreate() {
+    public void prePersist() {
         this.createdAt = LocalDateTime.now();
+        if (this.role == null) this.role = "CUSTOMER";
+        if (this.provider == null) this.provider = "LOCAL";
     }
 }
