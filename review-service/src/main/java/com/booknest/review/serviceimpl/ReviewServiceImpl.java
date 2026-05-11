@@ -1,13 +1,15 @@
 package com.booknest.review.serviceimpl;
 
+import com.booknest.review.client.BookClient;
+import com.booknest.review.client.OrderClient;
 import com.booknest.review.dto.OrderResponse;
 import com.booknest.review.entity.Review;
 import com.booknest.review.repository.ReviewRepository;
 import com.booknest.review.service.ReviewService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestTemplate;
 
 import java.util.List;
 import java.util.Optional;
@@ -15,69 +17,57 @@ import java.util.Optional;
 @Service
 public class ReviewServiceImpl implements ReviewService {
 
+    private static final Logger log = LoggerFactory.getLogger(ReviewServiceImpl.class);
+
     @Autowired
     private ReviewRepository reviewRepository;
 
     @Autowired
-    private RestTemplate restTemplate;
+    private OrderClient orderClient;
 
-    @Value("${order.service.url}")
-    private String orderServiceUrl;
-
-    @Value("${book.service.url}")
-    private String bookServiceUrl;
+    @Autowired
+    private BookClient bookClient;
 
     // ─── Add Review ───────────────────────────────────────────────────────────
 
     @Override
-    public Review addReview(int userId, String fullName, int bookId, int rating, String comment) {
+    public Review addReview(int userId, String fullName, int bookId,
+                            int rating, String comment) {
 
-        // Check if user already reviewed this book
-        if (reviewRepository.findByBookIdAndUserId(
-                bookId, userId).isPresent()) {
-            throw new RuntimeException(
-                    "You have already reviewed this book");
+        if (reviewRepository.findByBookIdAndUserId(bookId, userId).isPresent()) {
+            throw new RuntimeException("You have already reviewed this book");
         }
 
-        // Validate rating range
         if (rating < 1 || rating > 5) {
-            throw new RuntimeException(
-                    "Rating must be between 1 and 5");
+            throw new RuntimeException("Rating must be between 1 and 5");
         }
 
-        // Check if user has purchased and received this book
         boolean verified = false;
         try {
-        	OrderResponse[] orders = restTemplate.getForObject(
-        	        orderServiceUrl + "/orders/my-orders-by-user/" + userId,
-        	        OrderResponse[].class);
+            OrderResponse[] orders = orderClient.getOrdersByUserId(userId);
 
-        	if (orders != null) {
-        	    for (OrderResponse order : orders) {
-        	        if (order.getBookId() == bookId
-        	                && "Delivered".equals(order.getOrderStatus())) {
-        	            verified = true;
-        	            break;
-        	        }
-        	    }
-        	}
+            if (orders != null) {
+                for (OrderResponse order : orders) {
+                    if (order.getBookId() == bookId
+                            && "Delivered".equals(order.getOrderStatus())) {
+                        verified = true;
+                        break;
+                    }
+                }
+            }
 
-            // hard block if not a verified purchaser
             if (!verified) {
                 throw new RuntimeException(
                     "You can only review books you have purchased and received");
             }
 
         } catch (RuntimeException e) {
-            // Re-throw our own validation exceptions
             throw e;
         } catch (Exception e) {
-            // Order service unavailable — block review to be safe
             throw new RuntimeException(
                 "Unable to verify purchase. Please try again later.");
         }
 
-        // Build review
         Review review = new Review();
         review.setFullName(fullName);
         review.setUserId(userId);
@@ -87,10 +77,7 @@ public class ReviewServiceImpl implements ReviewService {
         review.setVerified(verified);
 
         Review saved = reviewRepository.save(review);
-
-        // Update book rating in book-service
         updateBookRating(bookId);
-
         return saved;
     }
 
@@ -118,23 +105,18 @@ public class ReviewServiceImpl implements ReviewService {
                         "Review not found: " + reviewId));
 
         if (review.getUserId() != userId) {
-            throw new RuntimeException(
-                    "Unauthorized to update this review");
+            throw new RuntimeException("Unauthorized to update this review");
         }
 
         if (rating < 1 || rating > 5) {
-            throw new RuntimeException(
-                    "Rating must be between 1 and 5");
+            throw new RuntimeException("Rating must be between 1 and 5");
         }
 
         review.setRating(rating);
         review.setComment(comment);
 
         Review updated = reviewRepository.save(review);
-
-        // Update book rating
         updateBookRating(review.getBookId());
-
         return updated;
     }
 
@@ -147,14 +129,11 @@ public class ReviewServiceImpl implements ReviewService {
                         "Review not found: " + reviewId));
 
         if (review.getUserId() != userId) {
-            throw new RuntimeException(
-                    "Unauthorized to delete this review");
+            throw new RuntimeException("Unauthorized to delete this review");
         }
 
         int bookId = review.getBookId();
         reviewRepository.deleteById(reviewId);
-
-        // Update book rating after deletion
         updateBookRating(bookId);
     }
 
@@ -192,13 +171,10 @@ public class ReviewServiceImpl implements ReviewService {
     private void updateBookRating(int bookId) {
         try {
             double avgRating = getAvgRating(bookId);
-            restTemplate.put(bookServiceUrl
-                    + "/books/update-rating/"
-                    + bookId + "?rating=" + avgRating, null);
+            bookClient.updateRating(bookId, avgRating);
         } catch (Exception e) {
-            // Log but don't fail if book service unavailable
-            System.out.println("Could not update book rating: "
-                    + e.getMessage());
+            log.warn("Could not update book rating for bookId {}: {}",
+                    bookId, e.getMessage());
         }
     }
 }
