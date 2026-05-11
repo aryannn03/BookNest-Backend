@@ -4,14 +4,20 @@ import com.booknest.notification.entity.Notification;
 import com.booknest.notification.repository.NotificationRepository;
 import com.booknest.notification.service.NotificationService;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.mail.SimpleMailMessage;
 import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.stereotype.Service;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 
 import java.util.List;
 
 @Service
 public class NotificationServiceImpl implements NotificationService {
+	
+	@Value("${app.mail.from}")
+	private String fromEmail;
 
     @Autowired
     private NotificationRepository notificationRepository;
@@ -22,17 +28,18 @@ public class NotificationServiceImpl implements NotificationService {
     // ─── Send Notification ────────────────────────────────────────────────────
 
     @Override
-    public Notification sendNotification(int userId,
-                                         String type,
-                                         String message) {
+    public Notification sendNotification(int userId, String type, String message) {
+        
+        // Decode URL-encoded message sent by other services
+        String decodedMessage = URLDecoder.decode(message, StandardCharsets.UTF_8);
+        
         Notification notification = new Notification();
         notification.setUserId(userId);
         notification.setType(type);
-        notification.setMessage(message);
+        notification.setMessage(decodedMessage);  
         notification.setRead(false);
         return notificationRepository.save(notification);
     }
-
     // ─── Mark As Read ─────────────────────────────────────────────────────────
 
     @Override
@@ -96,17 +103,21 @@ public class NotificationServiceImpl implements NotificationService {
                                String subject,
                                String body) {
         try {
+            // Decode URL-encoded params sent by other services
+            String decodedSubject = URLDecoder.decode(subject, StandardCharsets.UTF_8);
+            String decodedBody    = URLDecoder.decode(body, StandardCharsets.UTF_8);
+
             SimpleMailMessage message = new SimpleMailMessage();
-            message.setFrom("BookNest");
+            message.setFrom("BookNest <" + fromEmail + ">");
             message.setTo(toEmail);
-            message.setSubject(subject);
-            message.setText(body);
+            message.setSubject(decodedSubject);
+            message.setText(decodedBody);
             mailSender.send(message);
         } catch (Exception e) {
-            System.out.println("Email sending failed: "
-                    + e.getMessage());
+            System.out.println("Email sending failed: " + e.getMessage());
         }
     }
+
 
     // ─── Get All Notifications ────────────────────────────────────────────────
 

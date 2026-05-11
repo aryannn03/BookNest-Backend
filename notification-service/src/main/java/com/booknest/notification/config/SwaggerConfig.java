@@ -5,11 +5,17 @@ import io.swagger.v3.oas.models.info.Info;
 import io.swagger.v3.oas.models.security.SecurityRequirement;
 import io.swagger.v3.oas.models.security.SecurityScheme;
 import io.swagger.v3.oas.models.Components;
+import io.swagger.v3.oas.models.servers.Server;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import java.util.List;
 
 @Configuration
 public class SwaggerConfig {
+
+    @Value("${app.gateway-url}")
+    private String gatewayUrl;
 
     @Bean
     public OpenAPI customOpenAPI() {
@@ -17,7 +23,12 @@ public class SwaggerConfig {
             .info(new Info()
                 .title("BookNest Notification Service API")
                 .version("1.0")
-                .description("Authentication and User Management Service"))
+                .description("Notification Service"))
+            .servers(List.of(
+                new Server()
+                    .url(gatewayUrl)
+                    .description("API Gateway")
+            ))
             .addSecurityItem(new SecurityRequirement()
                 .addList("Bearer Authentication"))
             .components(new Components()

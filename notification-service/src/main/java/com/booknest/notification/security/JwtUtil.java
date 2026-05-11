@@ -2,6 +2,9 @@ package com.booknest.notification.security;
 
 import io.jsonwebtoken.*;
 import io.jsonwebtoken.security.Keys;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -10,6 +13,8 @@ import java.util.Date;
 
 @Component
 public class JwtUtil {
+	
+	private static final Logger log = LoggerFactory.getLogger(JwtUtil.class);
 
     @Value("${app.jwt.secret}")
     private String secret;
@@ -20,18 +25,6 @@ public class JwtUtil {
     // Generate key from secret
     private Key getSigningKey() {
         return Keys.hmacShaKeyFor(secret.getBytes());
-    }
-
-    // Generate token from email and role
-    public String generateToken(String email, String role, int userId) {
-        return Jwts.builder()
-                .setSubject(email)
-                .claim("role", role)
-                .claim("userId", userId)
-                .setIssuedAt(new Date())
-                .setExpiration(new Date(System.currentTimeMillis() + expiration))
-                .signWith(getSigningKey(), SignatureAlgorithm.HS256)
-                .compact();
     }
 
     // Extract email from token
@@ -55,32 +48,26 @@ public class JwtUtil {
             getClaims(token);
             return true;
         } catch (ExpiredJwtException e) {
-            System.out.println("Token expired: " + e.getMessage());
+        	log.warn("Token expired: {}", e.getMessage());
         } catch (UnsupportedJwtException e) {
-            System.out.println("Unsupported token: " + e.getMessage());
+        	log.warn("Unsupported token: {}", e.getMessage());
         } catch (MalformedJwtException e) {
-            System.out.println("Malformed token: " + e.getMessage());
+        	log.warn("Malformed token: {}", e.getMessage());
         } catch (IllegalArgumentException e) {
-            System.out.println("Illegal argument: " + e.getMessage());
+        	log.warn("Illegal argument: {}", e.getMessage());
         }
         return false;
     }
 
     // Check if token is expired
     public boolean isTokenExpired(String token) {
-        return getClaims(token).getExpiration().before(new Date());
+        try {
+            return getClaims(token).getExpiration().before(new Date());
+        } catch (ExpiredJwtException e) {
+            return true;
+        }
     }
 
-    // Refresh token — generate new token with same claims
-    public String refreshToken(String token) {
-        Claims claims = getClaims(token);
-        return Jwts.builder()
-                .setClaims(claims)
-                .setIssuedAt(new Date())
-                .setExpiration(new Date(System.currentTimeMillis() + expiration))
-                .signWith(getSigningKey(), SignatureAlgorithm.HS256)
-                .compact();
-    }
 
     // Internal — parse and return all claims
     private Claims getClaims(String token) {

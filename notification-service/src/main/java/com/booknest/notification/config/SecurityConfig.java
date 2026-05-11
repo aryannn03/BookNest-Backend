@@ -26,27 +26,20 @@ public class SecurityConfig {
         http
             .csrf(csrf -> csrf.disable())
 
-            .cors(cors -> cors.disable())
-
             .sessionManagement(session ->
-                session.sessionCreationPolicy(
-                        SessionCreationPolicy.IF_REQUIRED))
+            session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
 
             .authorizeHttpRequests(auth -> auth
-                // Public internal endpoints
-                .requestMatchers(
-                    "/notifications/send",
-                    "/notifications/send-email",
-                    "/actuator/**",
-
-                    // Swagger/OpenAPI endpoints
-                    "/api-docs/**",
-                    "/v3/api-docs/**",
-                    "/swagger-ui/**",
-                    "/swagger-ui.html"
-                ).permitAll()
-
-                .anyRequest().permitAll()
+            	    .requestMatchers(
+            	        "/notifications/send",
+            	        "/notifications/send-email",
+            	        "/actuator/**",
+            	        "/api-docs/**",
+            	        "/v3/api-docs/**",
+            	        "/swagger-ui/**",
+            	        "/swagger-ui.html"
+            	    ).permitAll()
+            	    .anyRequest().authenticated() 
             )
 
             .addFilterBefore(

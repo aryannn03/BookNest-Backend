@@ -128,13 +128,4 @@ public class NotificationResource {
         return ResponseEntity.ok(notificationService.getAll());
     }
 
-    // ─── Global Exception Handler ─────────────────────────────────────────────
-
-    @ExceptionHandler(RuntimeException.class)
-    public ResponseEntity<Map<String, String>> handleException(
-            RuntimeException ex) {
-        return ResponseEntity
-                .status(HttpStatus.BAD_REQUEST)
-                .body(Map.of("error", ex.getMessage()));
-    }
 }
