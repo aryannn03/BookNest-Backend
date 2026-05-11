@@ -12,44 +12,36 @@ import java.util.Optional;
 @Repository
 public interface BookRepository extends JpaRepository<Book, Integer> {
 
-    // Find books by title (partial match)
+    // Find by title (partial match)
     List<Book> findByTitleContainingIgnoreCase(String title);
 
-    // Find books by author (partial match)
+    // Find by author (partial match)
     List<Book> findByAuthorContainingIgnoreCase(String author);
 
-    // Find books by genre
+    // Find by genre
     List<Book> findByGenreIgnoreCase(String genre);
 
-    // Find book by ISBN
+    // Find by ISBN
     Optional<Book> findByIsbn(String isbn);
 
-    // Find books within a price range
+    // Find by price range
     List<Book> findByPriceBetween(double minPrice, double maxPrice);
 
-    // Find books with stock greater than 0 (in stock)
+    // Find books with stock greater than zero
     List<Book> findByStockGreaterThan(int stock);
 
     // Find featured books
     List<Book> findByFeaturedTrue();
 
-    // Full text keyword search across title, author, genre
+    // Full-text keyword search across title, author, genre, description
     @Query("SELECT b FROM Book b WHERE " +
-            "LOWER(b.title) LIKE LOWER(CONCAT('%', :keyword, '%')) OR " +
-            "LOWER(b.author) LIKE LOWER(CONCAT('%', :keyword, '%')) OR " +
-            "LOWER(b.genre) LIKE LOWER(CONCAT('%', :keyword, '%')) OR " +
-            "LOWER(b.description) LIKE LOWER(CONCAT('%', :keyword, '%'))")
+           "LOWER(b.title) LIKE LOWER(CONCAT('%', :keyword, '%')) OR " +
+           "LOWER(b.author) LIKE LOWER(CONCAT('%', :keyword, '%')) OR " +
+           "LOWER(b.genre) LIKE LOWER(CONCAT('%', :keyword, '%')) OR " +
+           "LOWER(b.description) LIKE LOWER(CONCAT('%', :keyword, '%')) OR " +
+           "LOWER(b.isbn) LIKE LOWER(CONCAT('%', :keyword, '%'))")
     List<Book> searchByKeyword(@Param("keyword") String keyword);
 
-    // Find books by publisher
-    List<Book> findByPublisherContainingIgnoreCase(String publisher);
-
-    // Find top rated books
-    List<Book> findTop10ByOrderByRatingDesc();
-
-    // Find new arrivals (sorted by published date)
-    List<Book> findTop10ByOrderByPublishedDateDesc();
-
-    // Check if ISBN already exists
-    boolean existsByIsbn(String isbn);
+    // Find by publisher
+    List<Book> findByPublisherIgnoreCase(String publisher);
 }

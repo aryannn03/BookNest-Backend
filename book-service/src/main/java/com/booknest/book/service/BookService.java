@@ -7,7 +7,7 @@ import java.util.Optional;
 
 public interface BookService {
 
-    // Add a new book (Admin)
+    // Add new book
     Book addBook(Book book);
 
     // Get all books
@@ -28,33 +28,23 @@ public interface BookService {
     // Get books by author
     List<Book> getByAuthor(String author);
 
-    // Get books by publisher
-    List<Book> getByPublisher(String publisher);
+    // Update book details
+    Book updateBook(Book book);
 
-    // Get books by price range
-    List<Book> getByPriceRange(double minPrice, double maxPrice);
+    // Delete book by ID
+    void deleteBook(int bookId);
+
+    // Update stock level
+    void updateStock(int bookId, int quantity);
+    
+    void updateRating(int bookId, double rating);
 
     // Get featured books
     List<Book> getFeaturedBooks();
 
-    // Get top rated books
-    List<Book> getTopRatedBooks();
+    // Get books by price range
+    List<Book> getByPriceRange(double min, double max);
 
-    // Get new arrivals
-    List<Book> getNewArrivals();
-
-    // Get in stock books
+    // Get in-stock books only
     List<Book> getInStockBooks();
-
-    // Update book details (Admin)
-    Book updateBook(Book book);
-
-    // Delete book (Admin)
-    void deleteBook(int bookId);
-
-    // Update stock level (Admin)
-    void updateStock(int bookId, int newStock);
-
-    // Update book rating (called by review-service)
-    void updateRating(int bookId, double newRating);
 }
